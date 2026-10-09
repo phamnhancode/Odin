@@ -1,0 +1,145 @@
+name: Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build_windows:
+    name: Windows Build
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Build Odin
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          ./build.bat 1 1
+
+      - name: Test Odin
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          odin run examples/demo
+
+      - name: Copy artifacts
+        shell: bash
+        run: |
+          rm -f bin/llvm/windows/LLVM-C.lib
+          mkdir -p dist
+          cp odin.exe dist/
+          cp LICENSE dist/
+          cp LLVM-C.dll dist/
+          cp -r shared base core vendor bin examples dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: true
+          name: windows_artifacts
+          path: dist/
+
+  build_linux:
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+
+    env:
+      ARCH: ${{ matrix.arch }}
+      DOCKER_IMAGE: ${{ matrix.arch == 'amd64' && 'alpine:3.24' || 'arm64v8/alpine:3.24' }}
+
+    name: Linux Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Build Odin
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src "$DOCKER_IMAGE" sh -c '
+            apk add --no-cache \
+              musl-dev llvm20-dev clang20 build-base git mold lz4 \
+              libxml2-static llvm20-static zlib-static zstd-static \
+              make &&
+            git config --global --add safe.directory /src &&
+            ./ci/build_linux_static.sh
+          '
+
+      - name: Test Odin
+        run: ./odin run examples/demo
+
+      - name: Package artifacts
+        run: |
+          FILE="odin-linux-$ARCH"
+          mkdir "$FILE"
+          cp odin LICENSE "$FILE/"
+          cp -r shared base core vendor examples "$FILE/"
+          ./ci/remove_windows_binaries.sh "$FILE"
+          tar -czf dist.tar.gz "$FILE"
+
+      - name: Test packaged build
+        run: |
+          FILE="odin-linux-$ARCH"
+          "$FILE/odin" run examples/demo
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch == 'amd64' && 'linux_artifacts' || 'linux_arm_artifacts' }}
+          path: dist.tar.gz
+
+  build_macos:
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+
+    env:
+      ARCH: ${{ matrix.arch }}
+
+    name: macOS Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'amd64' && 'macos-15-intel' || 'macos-latest' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install LLVM
+        run: |
+          brew update
+          brew install llvm@20 dylibbundler lld@20
+          brew link llvm@20
+
+      - name: Build Odin
+        run: CXXFLAGS="-L/usr/lib/system -L/usr/lib" make nightly
+
+      - name: Package artifacts
+        run: |
+          FILE="odin-macos-$ARCH"
+          mkdir "$FILE"
+          cp odin LICENSE "$FILE/"
+          cp -r shared base core vendor examples "$FILE/"
+          ./ci/remove_windows_binaries.sh "$FILE"
+          dylibbundler \
+            -b \
+            -x "$FILE/odin" \
+            -d "$FILE/libs" \
+            -od \
+            -p @executable_path/libs
+          tar -czf dist.tar.gz "$FILE"
+
+      - name: Test packaged build
+        run: |
+          FILE="odin-macos-$ARCH"
+          "$FILE/odin" run examples/demo
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch == 'amd64' && 'macos_artifacts' || 'macos_arm_artifacts' }}
+          path: dist.tar.gz
