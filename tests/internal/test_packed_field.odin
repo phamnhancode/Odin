@@ -246,3 +246,115 @@ test_packed_field_union_type_switch_ref :: proc(t: ^testing.T) {
 	testing.expect(t, ok)
 	testing.expect(t, simd.to_array(v) == [4]f32{5, 6, 7, 8})
 }
+
+
+// element type conversion of an array field of a #packed,
+// and matrix * array mul do a vector load of the array;
+// the load must not assume the element type alignment
+
+Packed_Conv :: struct #packed {
+	_:  u8,
+	a4: [4]f32, // offs 1
+}
+
+@(export)
+p5: Packed_Conv
+
+@(private="file")
+conv_float :: proc(p: ^Packed_Conv) -> [4]f64 {
+	return cast([4]f64)p.a4
+}
+
+@(private="file")
+conv_complex :: proc(p: ^Packed_Conv) -> [4]complex64 {
+	return cast([4]complex64)p.a4
+}
+
+@(private="file")
+mul_matrix :: proc(m: ^matrix[4, 4]f32, p: ^Packed_Conv) -> [4]f32 {
+	return m^ * p.a4
+}
+
+@(test)
+test_packed_field_array_conv :: proc(t: ^testing.T) {
+	p5.a4 = {1.5, 2.5, 3.5, 4.5} // exactly represenatble
+
+	y := #force_no_inline conv_float(&p5)
+	testing.expect(t, y == [4]f64{1.5, 2.5, 3.5, 4.5})
+
+	z := #force_no_inline conv_complex(&p5)
+	testing.expect(t, z == [4]complex64{1.5, 2.5, 3.5, 4.5})
+
+	m := matrix[4, 4]f32{
+		2, 0, 0, 0,
+		0, 2, 0, 0,
+		0, 0, 2, 0,
+		0, 0, 0, 2,
+	}
+	w := #force_no_inline mul_matrix(&m, &p5)
+	testing.expect(t, w == [4]f32{3, 5, 7, 9}) // exact float
+}
+
+
+// zero stores to a #packed field
+
+@(export)
+p6: Packed_Small
+
+@(private="file")
+zero_v :: proc(p: ^Packed_Small) {
+	p.v = {}
+}
+
+@(test)
+test_packed_field_zero_store :: proc(t: ^testing.T) {
+	p6.v = {1, 2, 3, 4}
+	p6.n = -1
+	p6.v = {} // folded const GEP
+	p6.n = 0
+	testing.expect(t, simd.to_array(p6.v) == [4]f32{})
+	testing.expect(t, p6.n == 0)
+
+	p6.v = {5, 6, 7, 8}
+	#force_no_inline zero_v(&p6) // GEP with packed metadata
+	testing.expect(t, simd.to_array(p6.v) == [4]f32{})
+}
+
+
+// a #packed field put in an `any`;
+// the `any` data must be aligned for the field type
+
+Packed_Any :: struct #packed {
+	_: u8,
+	w: [2]u128,     // offs 1
+	v: #simd[4]f32, // offs 33
+}
+
+@(export)
+p7: Packed_Any
+
+@(private="file")
+xor_any_wide :: proc(a: any) -> u128 {
+	w := (^[2]u128)(a.data)^
+	return w[0] ~ w[1]
+}
+
+@(private="file")
+any_simd_to_array :: proc(a: any) -> [4]f32 {
+	return simd.to_array((^#simd[4]f32)(a.data)^)
+}
+
+@(private="file")
+xor_field_wide :: proc(p: ^Packed_Any) -> u128 {
+	return xor_any_wide(p.w)
+}
+
+@(test)
+test_packed_field_in_any :: proc(t: ^testing.T) {
+	p7.w = {3, 5}
+	p7.v = {1, 2, 3, 4}
+
+	testing.expect(t, #force_no_inline xor_any_wide(p7.w) == 6) // folded const GEP
+	testing.expect(t, #force_no_inline any_simd_to_array(p7.v) == [4]f32{1, 2, 3, 4})
+	testing.expect(t, #force_no_inline xor_field_wide(&p7) == 6) // GEP with packed metadata
+}

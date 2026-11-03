@@ -83,7 +83,7 @@ enum EntityFlag : u64 {
 	EntityFlag_CustomLinkage_Strong   = 1ull<<42,
 	EntityFlag_CustomLinkage_Weak     = 1ull<<43,
 	EntityFlag_CustomLinkage_LinkOnce = 1ull<<44,
-	
+
 	EntityFlag_Require = 1ull<<50,
 	EntityFlag_ByPtr   = 1ull<<51, // enforce parameter is passed by pointer
 
@@ -210,6 +210,7 @@ struct AsmTemplateEntityDecl {
 	i32 view_bits; // the view width in bits, otherwise 0
 
 	bool no_init;
+	bool pin_overwritten; // a pinned input whose register the template writes, lowered as tied to a discarded output
 };
 
 // An Entity is a named "thing" in the language
@@ -242,6 +243,7 @@ struct Entity {
 
 	std::atomic<struct lbModule *> code_gen_module;
 	std::atomic<struct lbProcedure *> code_gen_procedure;
+	std::atomic<String *>             ir_mangled_name; // the backend's name for it, published once as modules may name it in parallel
 
 	u64         order_in_src;
 	String      deprecated_message;
@@ -291,7 +293,6 @@ struct Entity {
 		struct {
 			Type * type_parameter_specialization;
 			Type * original_type_for_parapoly;
-			String ir_mangled_name;
 			bool   is_type_alias;
 			bool   objc_is_implementation;
 			Type*  objc_superclass;
@@ -366,6 +367,7 @@ struct Entity {
 		} Label;
 		struct {
 			Ast *node;
+			Type *proc_type; // of its signature, as an asm group can make the entity's type invalid before its body is checked
 			bool is_volatile;
 			bool is_align_stack;
 			bool is_pure;
